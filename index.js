@@ -1,7 +1,6 @@
 // =====================
 // ENV SETUP
 // =====================
-require("dotenv").config();
 
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
