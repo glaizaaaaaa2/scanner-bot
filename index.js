@@ -1,5 +1,4 @@
 // index.js (RAILWAY SAFE + SCAN FEATURE KEPT)
-
 const {
   Client,
   GatewayIntentBits,
@@ -8,7 +7,6 @@ const {
   Routes,
   SlashCommandBuilder,
 } = require("discord.js");
-
 const fs = require("fs");
 const path = require("path");
 
@@ -84,7 +82,6 @@ function saveDB(db) {
 
 function normalizeGroups(db) {
   const groups = Array.isArray(db?.groups) ? db.groups : [];
-
   const normalized = groups
     .map((g) => {
       if (typeof g === "string") {
@@ -94,7 +91,9 @@ function normalizeGroups(db) {
       return {
         name: String(g?.name ?? "Group"),
         link: String(g?.link ?? ""),
-        waitDays: Number.isFinite(Number(g?.waitDays)) ? Number(g.waitDays) : 14,
+        waitDays: Number.isFinite(Number(g?.waitDays))
+          ? Number(g.waitDays)
+          : 14,
       };
     })
     .filter((g) => g.link);
@@ -108,9 +107,14 @@ let db = normalizeGroups(loadDB());
 // =====================
 // Roblox helpers
 // =====================
-function extractGamePassId(text) {
-  const m = text.match(/roblox\.com\/game-pass\/(\d+)/i);
-  return m ? m[1] : null;
+
+// ✅ NEW: extract ALL game pass IDs in the replied message
+function extractGamePassIds(text) {
+  if (!text) return [];
+  const matches = [...String(text).matchAll(/roblox\.com\/game-pass\/(\d+)/gi)];
+  const ids = matches.map((m) => m[1]);
+  // unique
+  return [...new Set(ids)];
 }
 
 function robuxAfterFee(price) {
@@ -123,7 +127,6 @@ function sleep(ms) {
 
 async function fetchWithRetry(url, options = {}, maxRetries = 3) {
   let lastRes = null;
-
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const res = await fetch(url, options);
     lastRes = res;
@@ -153,7 +156,6 @@ async function fetchGamePassDetails(gamePassId) {
   if (!cookie) throw new Error("ROBLOSECURITY environment variable not set.");
 
   const url = `https://apis.roblox.com/game-passes/v1/game-passes/${gamePassId}/details`;
-
   const res = await fetchWithRetry(
     url,
     {
@@ -166,7 +168,8 @@ async function fetchGamePassDetails(gamePassId) {
     3
   );
 
-  if (!res.ok) throw new Error(`Failed to fetch gamepass details (${res.status})`);
+  if (!res.ok)
+    throw new Error(`Failed to fetch gamepass details (${res.status})`);
   return res.json();
 }
 
@@ -178,7 +181,10 @@ function hasRegionalPricing(details) {
   if (pi.isInPriceOptimizationExperiment === true) return true;
   if (pi.isPriceOptimized === true) return true;
 
-  const enabled = Array.isArray(pi.enabledFeatures) ? pi.enabledFeatures.map(String) : [];
+  const enabled = Array.isArray(pi.enabledFeatures)
+    ? pi.enabledFeatures.map(String)
+    : [];
+
   const hits = [
     "RegionalPriceExperiment",
     "RegionalPricing",
@@ -201,7 +207,6 @@ async function usernameToUserId(username) {
   });
 
   if (!res.ok) throw new Error(`Failed to resolve username (${res.status})`);
-
   const data = await res.json();
   const found = data.data?.[0];
   return found?.id ?? null;
@@ -234,13 +239,19 @@ async function registerCommands() {
       .setName("add_group")
       .setDescription("Owner-only: add a Roblox group for eligibility checks")
       .addStringOption((o) =>
-        o.setName("name").setDescription("Display name (e.g., Nexus Arc)").setRequired(true)
+        o
+          .setName("name")
+          .setDescription("Display name (e.g., Nexus Arc)")
+          .setRequired(true)
       )
       .addStringOption((o) =>
         o.setName("link").setDescription("Roblox group link").setRequired(true)
       )
       .addIntegerOption((o) =>
-        o.setName("waitdays").setDescription("Unused for now (default 14)").setRequired(false)
+        o
+          .setName("waitdays")
+          .setDescription("Unused for now (default 14)")
+          .setRequired(false)
       ),
 
     new SlashCommandBuilder()
@@ -261,82 +272,116 @@ async function registerCommands() {
 // =====================
 const scanCooldown = new Map();
 const COOLDOWN_MS = 5000;
-
 let scanQueue = Promise.resolve();
+
 function enqueueScan(task) {
   scanQueue = scanQueue.then(task).catch((e) => console.error("Scan task failed:", e));
   return scanQueue;
 }
 
 // =====================
-// Message-based scan (this is your 2nd screenshot behavior)
+// Message-based scan (reply "scan" to a message that has one or more links)
 // =====================
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (message.channel.id !== config.scanChannelId) return;
-
   if (message.content.trim().toLowerCase() !== "scan") return;
   if (!message.reference?.messageId) return;
 
   const now = Date.now();
   const last = scanCooldown.get(message.author.id) || 0;
   if (now - last < COOLDOWN_MS) {
-    await message.reply("⏳ Slow down a bit—Roblox rate limits fast. Try again in a few seconds.");
+    await message.reply("⏳ Slow down a bit—Roblox rate limits fast.\nTry again in a few seconds.");
     return;
   }
   scanCooldown.set(message.author.id, now);
 
   enqueueScan(async () => {
     try {
-      const replied = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+      const replied = await message.channel.messages
+        .fetch(message.reference.messageId)
+        .catch(() => null);
       if (!replied) return;
 
-      const gpId = extractGamePassId(replied.content);
-      if (!gpId) {
-        await message.reply("I couldn’t find a Roblox gamepass link in the replied message.");
+      // ✅ get ALL game pass ids from the replied message
+      const ids = extractGamePassIds(replied.content);
+
+      if (!ids.length) {
+        await message.reply("I couldn’t find any Roblox gamepass links in the replied message.");
         return;
       }
 
-      const link = `https://roblox.com/game-pass/${gpId}`;
+      const blocks = [];
+      let i = 1;
 
-      const info = await fetchGamePassInfo(gpId);
-      const price = Number(info.PriceInRobux ?? info.priceInRobux ?? info.price ?? 0);
+      for (const gpId of ids) {
+        const link = `https://www.roblox.com/game-pass/${gpId}`;
 
-      if (!price) {
-        await message.reply("I fetched the gamepass, but couldn’t read the price.");
-        return;
+        try {
+          const info = await fetchGamePassInfo(gpId);
+          const price = Number(info.PriceInRobux ?? info.priceInRobux ?? info.price ?? 0);
+
+          if (!price) {
+            blocks.push(`${i}. ${link}\nPrice: (couldn’t read)\n`);
+            i++;
+            continue;
+          }
+
+          const receive = robuxAfterFee(price);
+
+          // Optional regional pricing detection
+          let details = null;
+          let regionalOn = false;
+
+          try {
+            details = await fetchGamePassDetails(gpId);
+            regionalOn = details ? hasRegionalPricing(details) : false;
+          } catch (e) {
+            details = null;
+            regionalOn = false;
+          }
+
+          if (details && regionalOn) {
+            blocks.push(
+              `${i}. ${link}\nPrice: **${price}**\n⚠️ Regional pricing detected\n`
+            );
+          } else if (details && !regionalOn) {
+            blocks.push(
+              `${i}. ${link}\nPrice: **${price}**\nYou will receive: **${receive}** robux\n`
+            );
+          } else {
+            blocks.push(
+              `${i}. ${link}\nPrice: **${price}**\nYou will receive: **${receive}** robux\n⚠️ Couldn’t check regional pricing right now (rate limited).\nTry again in ~10–30 seconds.\n`
+            );
+          }
+        } catch (e) {
+          blocks.push(`${i}. ${link}\n❌ Failed to scan (${e?.message ?? "error"})\n`);
+        }
+
+        i++;
+        // small delay to reduce 429
+        await sleep(350);
       }
 
-      const receive = robuxAfterFee(price);
-
-      let details = null;
-      try {
-        details = await fetchGamePassDetails(gpId);
-      } catch (e) {
-        details = null;
-        console.log(`Regional detection failed for ${gpId}:`, e?.message ?? e);
+      // Discord message limit ~2000 chars, so chunk replies
+      const chunks = [];
+      let buf = "";
+      for (const b of blocks) {
+        if ((buf + b + "\n").length > 1800) {
+          chunks.push(buf);
+          buf = "";
+        }
+        buf += b + "\n";
       }
+      if (buf.trim()) chunks.push(buf);
 
-      const regionalOn = details ? hasRegionalPricing(details) : false;
-
-      if (details && regionalOn) {
-        await message.reply([`${link}`, `Price: **${price}**`, `⚠️ Regional pricing detected`].join("\n"));
-      } else if (details && !regionalOn) {
-        await message.reply([`${link}`, `Price: **${price}**`, `You will receive: **${receive}** robux`].join("\n"));
-      } else {
-        await message.reply(
-          [
-            `${link}`,
-            `Price: **${price}**`,
-            `You will receive: **${receive}** robux`,
-            `⚠️ Couldn’t check regional pricing right now (rate limited). Try again in ~10–30 seconds.`,
-          ].join("\n")
-        );
+      for (const c of chunks) {
+        await message.reply(c.trim());
       }
     } catch (err) {
       console.error(err);
       try {
-        await message.reply("Something went wrong while scanning. Try again in a bit.");
+        await message.reply("Something went wrong while scanning.\nTry again in a bit.");
       } catch {}
     }
   });
@@ -350,7 +395,10 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "add_group") {
     if (interaction.user.id !== config.ownerId) {
-      await interaction.reply({ content: "Only the owner can use this command.", ephemeral: true });
+      await interaction.reply({
+        content: "Only the owner can use this command.",
+        ephemeral: true,
+      });
       return;
     }
 
@@ -360,7 +408,10 @@ client.on("interactionCreate", async (interaction) => {
 
     const groupId = extractGroupId(link);
     if (!groupId) {
-      await interaction.reply({ content: "That doesn’t look like a valid Roblox group link.", ephemeral: true });
+      await interaction.reply({
+        content: "That doesn’t look like a valid Roblox group link.",
+        ephemeral: true,
+      });
       return;
     }
 
@@ -369,12 +420,16 @@ client.on("interactionCreate", async (interaction) => {
 
     const idx = db.groups.findIndex((g) => extractGroupId(g.link) === String(groupId));
     const entry = { name, link, waitDays };
+
     if (idx >= 0) db.groups[idx] = entry;
     else db.groups.push(entry);
 
     saveDB(db);
 
-    await interaction.reply({ content: `✅ Saved group: **${name}**`, ephemeral: true });
+    await interaction.reply({
+      content: `✅ Saved group: **${name}**`,
+      ephemeral: true,
+    });
     return;
   }
 
@@ -394,7 +449,7 @@ client.on("interactionCreate", async (interaction) => {
     try {
       userId = await usernameToUserId(username);
     } catch {
-      await interaction.editReply("Roblox lookup failed. Try again in a bit.");
+      await interaction.editReply("Roblox lookup failed.\nTry again in a bit.");
       return;
     }
 
@@ -405,6 +460,7 @@ client.on("interactionCreate", async (interaction) => {
 
     db = normalizeGroups(loadDB());
     const savedGroups = db.groups || [];
+
     if (!savedGroups.length) {
       await interaction.editReply("No groups are saved yet. Ask the owner to run /add_group.");
       return;
@@ -414,25 +470,23 @@ client.on("interactionCreate", async (interaction) => {
     try {
       ug = await userGroups(userId);
     } catch {
-      await interaction.editReply("Failed to fetch your groups from Roblox. Try again later.");
+      await interaction.editReply("Failed to fetch your groups from Roblox.\nTry again later.");
       return;
     }
 
     const userGroupIds = new Set((ug.data || []).map((x) => String(x.group?.id)));
 
     const desc = [];
-    desc.push("‎ ‎ ‎ ‎ ‎ ‎  *am i in group?*");
+    desc.push("‎ ‎ ‎ ‎ ‎ ‎ *am i in group?*");
     desc.push("");
 
     for (const g of savedGroups) {
       const gid = extractGroupId(g.link);
       const displayName = g.name ?? (gid ? `Group ${gid}` : "Group");
       const hyperlink = `[${displayName}](${g.link})`;
-
       const inGroup = gid && userGroupIds.has(String(gid));
-
-      if (inGroup) desc.push(`﹒ ${hyperlink} : **Member**‎ ‎ 🟢`);
-      else desc.push(`﹒ ${hyperlink} : **Not in Group**‎ ‎ 🔴`);
+      if (inGroup) desc.push(`﹒ ${hyperlink} : **Member**‎ ‎ `);
+      else desc.push(`﹒ ${hyperlink} : **Not in Group**‎ ‎ `);
     }
 
     desc.push("");
@@ -440,7 +494,7 @@ client.on("interactionCreate", async (interaction) => {
 
     const embed = {
       color: 0xf8c8dc,
-      title: `╰┈➤ ${username}  ˎˊ˗`,
+      title: `╰┈➤ ${username} ˎˊ˗`,
       description: desc.join("\n"),
       footer: { text: " Membership Checker" },
     };
